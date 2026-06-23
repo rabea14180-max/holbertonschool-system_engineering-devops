@@ -1,0 +1,80 @@
+# Task 3 - Scale Up
+
+## Infrastructure Diagram
+
+```
+User (browser)
+     |
+     | https://www.foobar.com
+     |
+[DNS - www.foobar.com -> Load Balancer Cluster VIP]
+     |
+     v
++----------------------------------+
+|   HAProxy Load Balancer #1       |  <-- Active
+|   HAProxy Load Balancer #2       |  <-- Passive (Cluster / failover)
++---+----------+----------+--------+
+    |          |          |
+    |          |          |
++---v---+  +---v---+  +---v---+
+|  Web  |  | App   |  |  DB   |
+|Server |  |Server |  |Server |
+|(Nginx)|  |(Logic)|  |(MySQL)|
++-------+  +-------+  +---+---+
+                           |
+                    +------v------+
+                    |  Primary    |
+                    |  +  Replica |
+                    +-------------+
+```
+
+---
+
+## Specifics
+
+### Why add each element?
+
+**Additional Load Balancer (HAProxy Cluster):**
+The original single load balancer is itself a Single Point of Failure (SPOF). Adding a second HAProxy instance and configuring them in a **cluster** (using Keepalived with a Virtual IP / VIP) eliminates this SPOF. The two load balancers share a floating VIP:
+- **HAProxy #1** is Active — it processes all incoming traffic.
+- **HAProxy #2** is Passive — it monitors HAProxy #1 via a heartbeat signal. If HAProxy #1 fails, Keepalived automatically reassigns the VIP to HAProxy #2 within seconds, making it the new Active node. Users experience no downtime.
+
+**Split Components onto Dedicated Servers:**
+
+| Component | Server | Reason |
+|-----------|--------|--------|
+| Web Server (Nginx) | Dedicated server | Handles only HTTP/HTTPS requests and static files. Isolated from app logic. Can be scaled independently when static traffic increases. |
+| Application Server | Dedicated server | Runs only the business logic (e.g., PHP/Python/Node.js). Isolated from web serving. Can be scaled independently when compute-heavy requests increase. |
+| Database Server (MySQL) | Dedicated server | Runs only MySQL. I/O-intensive operations don't compete with web or app processes. Can be tuned specifically for database workloads (large RAM for buffer pool, fast disks). |
+
+---
+
+### Why split components?
+
+**Resource Isolation:**
+When all components share one server, a memory leak in the application server starves Nginx and MySQL of RAM, degrading all services at once. On separate servers, a problem in one component does not affect others.
+
+**Independent Scaling:**
+If the application logic is the bottleneck (CPU-heavy), you can add more application servers without duplicating web servers or databases. This horizontal scaling is only possible when components are decoupled.
+
+**Easier Maintenance:**
+Restarting the application server (e.g., to deploy new code) does not interrupt Nginx (which can continue serving cached static content) and does not restart MySQL. Zero-downtime deployments become much simpler.
+
+**Security:**
+Each server can have its own firewall with minimal exposed ports. The database server's port 3306 is accessible only from the application server's IP — never from the internet.
+
+---
+
+## Summary of the Full Scaled Infrastructure
+
+| Layer | Component | Count | Notes |
+|-------|-----------|-------|-------|
+| DNS | foobar.com A record | 1 | Points to Load Balancer VIP |
+| Load Balancing | HAProxy cluster | 2 | Active-Passive, Keepalived VIP |
+| Web Serving | Nginx | 2+ | Reverse proxy + static files |
+| Application | App Server | 2+ | Business logic, horizontally scalable |
+| Database | MySQL Primary + Replica | 2 | Primary for writes, Replica for reads |
+| Security | Firewalls + SSL | Per layer | HTTPS end-to-end, restricted ports |
+| Monitoring | Datadog/Sumologic agents | Per server | Metrics, logs, alerting |
+
+This architecture eliminates all single points of failure, allows each layer to scale independently, and follows the separation of concerns principle.
