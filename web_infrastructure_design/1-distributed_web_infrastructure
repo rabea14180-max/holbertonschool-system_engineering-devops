@@ -1,0 +1,99 @@
+# Task 1 - Distributed Web Infrastructure
+
+## Infrastructure Diagram
+
+```
+User (browser)
+     |
+     | www.foobar.com
+     |
+[DNS Resolution]
+     | Returns 8.8.8.8
+     |
+     v
++------------------------------------+
+|      Load Balancer (HAProxy)        |
+|   Algorithm: Round-Robin           |
+|   Active-Active setup              |
++----------+-----------+-------------+
+           |           |
+     +-----+     +-----+
+     |                 |
++----v-----------+ +---v------------+
+|  SERVER 1      | |  SERVER 2      |
+|                | |                |
+|  +----------+  | |  +----------+  |
+|  |  Nginx   |  | |  |  Nginx   |  |
+|  |(Web Svr) |  | |  |(Web Svr) |  |
+|  +----+-----+  | |  +----+-----+  |
+|       |        | |       |        |
+|  +----v-----+  | |  +----v-----+  |
+|  |  App     |  | |  |  App     |  |
+|  |  Server  |  | |  |  Server  |  |
+|  +----------+  | |  +----------+  |
++----------------+ +----------------+
+           |               |
+           +-------+-------+
+                   |
+         +---------v---------+
+         |   MySQL Cluster   |
+         |  Primary  Replica |
+         | (read/write)(read)|
+         +-------------------+
+```
+
+---
+
+## Specifics
+
+### Why add each element?
+
+**Load Balancer (HAProxy):**
+Added to distribute incoming traffic across multiple servers so no single server is overwhelmed. It also removes the single point of failure at the web/app layer — if one server goes down, the load balancer routes all traffic to the remaining server.
+
+**Second Server (Server 2):**
+Added for redundancy and capacity. With two servers, the infrastructure can handle more traffic and tolerate a single server failure without going offline.
+
+**MySQL Primary-Replica Cluster:**
+Added to separate read and write operations. The Primary handles all writes; the Replica handles read queries. This improves read performance and provides a backup in case the Primary fails.
+
+---
+
+### Load Balancer Distribution Algorithm
+HAProxy is configured with **Round-Robin**. Each new incoming request is forwarded to the next server in sequence: request 1 → Server 1, request 2 → Server 2, request 3 → Server 1, and so on. This evenly distributes load across servers of equal capacity.
+
+---
+
+### Active-Active vs Active-Passive Setup
+
+**This setup uses Active-Active:**
+Both servers are running and handling live traffic simultaneously. The load balancer splits requests between them.
+
+**Active-Passive** would mean one server handles all traffic while the second stays idle on standby, only taking over if the primary fails. Active-Active is more efficient as both servers are utilized.
+
+---
+
+### How a Primary-Replica (Master-Slave) Database Cluster Works
+- The **Primary node** handles all write operations (INSERT, UPDATE, DELETE). Any data written to the Primary is asynchronously (or synchronously) replicated to the Replica.
+- The **Replica node** receives replicated data from the Primary and handles read-only queries (SELECT). This offloads read traffic from the Primary.
+- If the Primary fails, the Replica can be promoted to Primary (manual or automatic failover).
+
+### Difference Between Primary and Replica from the Application's Perspective
+- The application sends all **write queries** (INSERT, UPDATE, DELETE) to the **Primary**.
+- The application sends **read queries** (SELECT) to the **Replica** to reduce load on the Primary.
+- The application must be configured with two database connection endpoints: one for reads and one for writes.
+
+---
+
+## Issues with this Infrastructure
+
+### 1. Single Points of Failure (SPOF)
+- **Load Balancer:** There is only one HAProxy instance. If it goes down, the entire website becomes unreachable even though the two application servers are healthy.
+- **MySQL Primary:** If the Primary database fails and there is no automatic failover, the application cannot perform write operations. The Replica does not automatically become the new Primary.
+
+### 2. Security Issues
+- **No Firewall:** There are no firewall rules to restrict which ports or IP addresses can access the servers. Attackers can probe any open port.
+- **No HTTPS/SSL:** Traffic between users and the load balancer is unencrypted HTTP. User data (passwords, personal info) is transmitted in plaintext and is vulnerable to interception (man-in-the-middle attacks).
+
+### 3. No Monitoring
+There is no monitoring system (e.g., Datadog, Nagios, New Relic) in place. If a server goes down, a service crashes, or CPU/memory spikes, no alerts are triggered. The operations team has no visibility into the health or performance of the infrastructure.
