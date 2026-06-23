@@ -1,0 +1,114 @@
+# Task 2 - Secured and Monitored Web Infrastructure
+
+## Infrastructure Diagram
+
+```
+User (browser)
+     |
+     | https://www.foobar.com
+     |
+[DNS Resolution -> 8.8.8.8]
+     |
+     v
++----------------------------+
+|   Firewall 1               |  <-- Blocks all traffic except port 443 (HTTPS)
++----------------------------+
+     |
+     v
++----------------------------+
+|  Load Balancer (HAProxy)   |
+|  + SSL Certificate         |  <-- Terminates HTTPS, decrypts traffic
++--------+-------------------+
+         |            |
+  +------+      +-----+
+  |                   |
++-v----------+  +-----v------+
+| Firewall 2 |  | Firewall 3 |  <-- Per-server firewalls
++-----+------+  +-----+------+
+      |                |
++-----v------+  +------v-----+
+|  SERVER 1  |  |  SERVER 2  |
+|  Nginx     |  |  Nginx     |
+|  App Server|  |  App Server|
+|  Monitoring|  |  Monitoring|  <-- Monitoring client (e.g., Datadog agent)
++-----+------+  +------+-----+
+      |                |
+      +-------+--------+
+              |
+    +---------v----------+
+    |  MySQL Cluster     |
+    |  Primary | Replica |
+    |  Monitoring agent  |
+    +--------------------+
+              |
+    +---------v----------+
+    |  Monitoring Service|
+    | (Datadog/Sumologic)|
+    +--------------------+
+```
+
+---
+
+## Specifics
+
+### Why add each element?
+
+**3 Firewalls:**
+Firewalls filter network traffic based on rules. They block unauthorized access attempts, limit exposed ports (only 443/HTTPS open to the internet), and prevent lateral movement if one server is compromised. Each firewall layer adds defense in depth: one in front of the load balancer, and one per server.
+
+**SSL Certificate (HTTPS):**
+The SSL/TLS certificate encrypts traffic between the user's browser and the load balancer using HTTPS (port 443). This prevents man-in-the-middle attacks, eavesdropping, and tampering with data in transit. It also authenticates the server's identity to users.
+
+**3 Monitoring Clients:**
+Monitoring agents (e.g., Datadog, Sumologic, New Relic) are installed on each server. They collect metrics (CPU, memory, disk, network), logs, and service health data, then send this data to a centralized monitoring service. This gives the operations team real-time visibility and alerting.
+
+---
+
+### What are firewalls for?
+Firewalls are security systems that monitor and control incoming and outgoing network traffic based on predefined security rules. They protect servers by:
+- Blocking unauthorized ports and protocols
+- Whitelisting only necessary traffic (e.g., HTTPS on 443, MySQL only from app servers)
+- Preventing unauthorized access from the internet
+
+---
+
+### Why is the traffic served over HTTPS?
+HTTPS encrypts the communication between the client and the server using TLS (Transport Layer Security). This ensures:
+- **Confidentiality:** Data cannot be read by third parties in transit
+- **Integrity:** Data cannot be tampered with during transmission
+- **Authentication:** Users can verify they are talking to the real server, not an impersonator
+
+Without HTTPS, passwords, cookies, and personal data travel in plaintext over the internet.
+
+---
+
+### What monitoring is used for?
+Monitoring collects metrics and logs from all components of the infrastructure to:
+- Detect outages and alert the on-call team immediately
+- Track performance trends (slow queries, high CPU usage)
+- Enable capacity planning (know when to scale before it becomes a problem)
+- Provide audit logs for security and compliance
+
+### How the monitoring tool collects data:
+A lightweight monitoring agent (e.g., Datadog Agent) runs as a background service on each server. It:
+1. Collects system metrics (CPU, RAM, disk I/O, network)
+2. Reads application logs and error logs
+3. Checks the health of services (Nginx, MySQL, app server)
+4. Ships all this data securely to the centralized monitoring platform via HTTPS
+5. The platform stores, visualizes, and triggers alerts based on thresholds
+
+### How to monitor web server QPS (Queries Per Second):
+To monitor Nginx QPS, enable the Nginx status module (`ngx_http_stub_status_module`) and configure the monitoring agent to scrape the `/nginx_status` endpoint. The agent reads the `requests` counter, calculates the delta per second, and sends the QPS metric to the monitoring dashboard. Set an alert if QPS drops to zero (Nginx down) or spikes above a threshold (traffic anomaly).
+
+---
+
+## Issues with this Infrastructure
+
+### 1. SSL Termination at the Load Balancer
+SSL is terminated at the load balancer, meaning traffic between the load balancer and the backend servers (Server 1, Server 2) travels **unencrypted** (plain HTTP). If the internal network is compromised, traffic can be intercepted. The fix is to use end-to-end encryption (SSL all the way to the application servers), though this adds complexity.
+
+### 2. Single Primary MySQL Server for Writes
+Only the Primary MySQL node accepts write queries. If the Primary goes down, no writes can be performed until a Replica is manually or automatically promoted to Primary. This is still a SPOF for write operations. A true high-availability solution requires automatic failover (e.g., MySQL Group Replication or Galera Cluster).
+
+### 3. Servers Have All Components (No Separation of Concerns)
+Each server runs Nginx, the application server, and a monitoring agent together. If one component consumes excessive resources (e.g., a memory leak in the app), it degrades all other components on the same server. Ideally, web servers, application servers, and databases should be on separate dedicated machines to isolate failure domains and allow independent scaling.
